@@ -133,6 +133,10 @@ EwomsAddApplication(ebos
                     SOURCES ebos/ebos.cc
                     EXE_NAME ebos
                     CONDITION ${OPM_GRID_FOUND} AND ${OPM_PARSER_FOUND} AND ${OPM_CORE_FOUND})
+					
+EwomsAddApplication(test2
+					SOURCES tutorial/Package_bench2/tutorial2.cc
+					EXE_NAME bench2)
 
 if(OPM_GRID_FOUND AND OPM_CORE_FOUND AND OPM_PARSER_FOUND)
   install(TARGETS ebos DESTINATION bin)
