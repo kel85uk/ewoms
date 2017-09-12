@@ -52,6 +52,7 @@
 #include <dune/common/version.hh>
 
 #include <sstream>
+#include <fstream>
 #include <string>
 #include <cmath>
 
@@ -186,6 +187,8 @@ class WaterCH4Problem : public GET_PROP_TYPE(TypeTag, BaseProblem)
     typedef typename GET_PROP_TYPE(TypeTag, RateVector) RateVector;
     typedef typename GET_PROP_TYPE(TypeTag, BoundaryRateVector) BoundaryRateVector;
     typedef typename GET_PROP_TYPE(TypeTag, PrimaryVariables) PrimaryVariables;
+    typedef typename GET_PROP_TYPE(TypeTag, SolutionVector) SolutionVector;
+    typedef typename GET_PROP_TYPE(TypeTag, ElementContext) ElementContext;
     typedef typename GET_PROP_TYPE(TypeTag, Constraints) Constraints;
     typedef typename GET_PROP_TYPE(TypeTag, Simulator) Simulator;
     typedef typename GET_PROP_TYPE(TypeTag, Model) Model;
@@ -193,8 +196,8 @@ class WaterCH4Problem : public GET_PROP_TYPE(TypeTag, BaseProblem)
     typedef typename GET_PROP_TYPE(TypeTag, MaterialLawParams) MaterialLawParams;
     
     typedef typename GridView::template Codim<0>::Entity Element;
-	typedef typename GridView::template Codim<dim>::Entity Vertex;
-	typedef typename GridView::Intersection Intersection;
+    typedef typename GridView::template Codim<dim>::Entity Vertex;
+    typedef typename GridView::Intersection Intersection;
     typedef typename GridView::ctype CoordScalar;
     typedef Dune::FieldVector<CoordScalar, dimWorld> GlobalPosition;
     typedef Dune::FieldVector<Scalar, numPhases> PhaseVector;
@@ -239,6 +242,10 @@ public:
         coarseMaterialParams_.finalize();
         initFluidStates_();
         this->simulator().startNextEpisode(24.0*60.0*60.0);
+        ElementContext elemCtx(this->simulator());
+        salt_storage_.resize(elemCtx.numDof(0),0);
+        xyCoord_.resize(elemCtx.numDof(0));
+        salt_file.open("./salt_storage.dat");
     }
 
     /*!
@@ -277,7 +284,7 @@ public:
      */
     void endTimeStep()
     {
-#ifndef NDEBUG
+//#ifndef NDEBUG
         // checkConservativeness() does not include the effect of constraints, so we
         // disable it for this problem...
         //this->model().checkConservativeness();
@@ -290,7 +297,19 @@ public:
         if (this->gridView().comm().rank() == 0) {
             std::cout << "Storage: " << storage << std::endl << std::flush;
         }
-#endif // NDEBUG
+        GlobalPosition pos;
+        Scalar x,y;
+        for ( auto it = 0; it < salt_storage_.size(); ++it )
+        {
+          if (salt_storage_.at(it) != 0){
+            pos = xyCoord_.at(it);
+            x = pos[0];
+            y = pos[1];
+            salt_file << this->simulator().time() << ";" << it << "," << x << "," << y  << "," 
+                      << salt_storage_.at(it) << "\n" << std::flush;
+          }
+        }
+//#endif // NDEBUG
     }
 
     /*!
@@ -408,8 +427,9 @@ public:
     {
         //RateVector massRate(0.0);
         //rate.setMassRate(massRate);
-		const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
+		    const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
         const Scalar& elemVol = context.dofVolume(spaceIdx,timeIdx);
+        const unsigned& globalIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
         //Opm::CompositionalFluidState<Scalar,FluidSystem> fs;
         const auto& fs = context.intensiveQuantities(spaceIdx,timeIdx).fluidState();
         //fs = fs1;
@@ -421,6 +441,8 @@ public:
         if(NaCll_massFraction > 0.3){
             Scalar removal = std::max(1e-7*elemVol*density*(NaCll_massFraction - 0.3),0.);
             massRate[conti0EqIdx + NACLIdx] = -removal;
+            salt_storage_.at(globalIdx) += removal;
+            xyCoord_.at(globalIdx) = pos;
         }
         rate.setMassRate(massRate);
     }
@@ -446,7 +468,7 @@ private:
         updateFluidState_(outletFluidState_,false,false);
         updateFluidState_(initFluidState_,false,true);
     }
-    
+
     template <class FluidState>
     void updateFluidState_(FluidState& fs,
                             bool isInlet,
@@ -454,7 +476,7 @@ private:
     {
         int b;
         Scalar xNACL;
-		xNACL = FluidSystem::salinityTomoleFrac(salinity_);
+        xNACL = FluidSystem::salinityTomoleFrac(salinity_);
         Opm::MMPCAuxConstraint<Scalar> MMPCAux;
         if (isInlet&&!isInit){
             fs.setPressure(gasPhaseIdx,10.0e6);
@@ -511,6 +533,10 @@ private:
     Scalar systemperature_;
     
     Scalar salinity_;
+
+    mutable std::vector<Scalar> salt_storage_;
+    mutable std::vector<GlobalPosition> xyCoord_;
+    std::ofstream salt_file;
     
     Opm::CompositionalFluidState<Scalar,FluidSystem> inletFluidState_;
     Opm::CompositionalFluidState<Scalar,FluidSystem> outletFluidState_;
