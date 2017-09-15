@@ -34,7 +34,7 @@
 #include <ewoms/linear/parallelistlbackend.hh>
 
 #include "./tnoBrineCH4FluidSystem_varsalinity.hpp"
-#include <opm/material/fluidstates/ImmiscibleFluidState.hpp>
+//#include <opm/material/fluidstates/ImmiscibleFluidState.hpp>
 #include <opm/material/fluidstates/CompositionalFluidState.hpp>
 #include <opm/material/fluidmatrixinteractions/LinearMaterial.hpp>
 #include <opm/material/fluidmatrixinteractions/RegularizedBrooksCorey.hpp>
@@ -222,6 +222,7 @@ public:
         systemperature_ = 418.15;
         
         salinity_ = 0.1;
+        max_salinity_ = 0.3;
 
         FluidSystem::init(/*Tmin=*/417, /*Tmax=*/420, /*nT=*/3,
                           /*pmin=*/1e5, /*pmax=*/12e6, /*np=*/10000, salinity_);
@@ -420,32 +421,87 @@ public:
      * everywhere.
      */
     template <class Context>
-    void source(RateVector& rate,
-                const Context& context,
-                unsigned spaceIdx,
-                unsigned timeIdx) const
+    void source(  RateVector& rate,
+                  const Context& context,
+                  unsigned spaceIdx,
+                  unsigned timeIdx        ) const
     {
-        //RateVector massRate(0.0);
-        //rate.setMassRate(massRate);
 		    const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
         const Scalar& elemVol = context.dofVolume(spaceIdx,timeIdx);
         const unsigned& globalIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
-        //Opm::CompositionalFluidState<Scalar,FluidSystem> fs;
+        
         const auto& fs = context.intensiveQuantities(spaceIdx,timeIdx).fluidState();
-        //fs = fs1;
-        //auto CH4l_moleFraction = fs.moleFraction(liquidPhaseIdx,CH4Idx);
-        auto NaCll_massFraction = (fs).massFraction(liquidPhaseIdx,NACLIdx);
-        Scalar density = (fs).density(liquidPhaseIdx);
-        Scalar totalNACLl = elemVol*density*NaCll_massFraction;
-        RateVector massRate(0.0);
-        if(NaCll_massFraction > 0.3){
-            Scalar removal = std::max(1e-7*elemVol*density*(NaCll_massFraction - 0.3),0.);
-            massRate[conti0EqIdx + NACLIdx] = -removal;
-            salt_storage_.at(globalIdx) += removal;
-            xyCoord_.at(globalIdx) = pos;
-        }
-        rate.setMassRate(massRate);
+        
+        Scalar moleFracNaCl_Max_lPhase = FluidSystem::salinityTomoleFrac(max_salinity_);
+        
+        auto NaCll_moleFraction = (fs).moleFraction(liquidPhaseIdx,NACLIdx);
+        const auto& elem_Porosity = context.intensiveQuantities(spaceIdx,timeIdx).porosity();
+        const auto& elem_molarDensity = (fs).molarDensity(liquidPhaseIdx);
+        const auto& elem_saturation = (fs).saturation(liquidPhaseIdx);
+        Scalar precip_salt = elem_Porosity * elem_molarDensity * elem_saturation
+                             * (NaCll_moleFraction - moleFracNaCl_Max_lPhase);
+
+        Scalar removal = std::max(precip_salt,0.);
+        
+        RateVector molar_Rate(0.0);
+
+        molar_Rate[conti0EqIdx + NACLIdx] = -removal;
+        salt_storage_.at(globalIdx) += removal*elemVol;
+        xyCoord_.at(globalIdx) = pos;
+        rate.setMolarRate(molar_Rate);
     }
+
+    /*!
+    * \brief Evaluate the source term for all phases within a given
+    *        sub-control-volume.
+    *
+    * For this method, the \a values parameter stores the rate mass
+    * of a component is generated or annihilate per volume
+    * unit. Positive values mean that mass is created, negative ones
+    * mean that it vanishes.
+    */
+    /*
+    void solDependentSource(PrimaryVariables &source,
+                                const Element &element,
+                                const FVElementGeometry &fvGeometry,
+                                int scvIdx, const ElementVolumeVariables &elemVolVars) const
+    {
+                  source = 0;
+                  const  VolumeVariables &volVars = elemVolVars[scvIdx];
+                  Scalar moleFracNaCl_lPhase = volVars.fluidState().moleFraction(wPhaseIdx, NaClIdx);
+                  Scalar moleFracNaCl_gPhase = volVars.fluidState().moleFraction(nPhaseIdx, NaClIdx);
+                  Scalar massFracNaCl_Max_lPhase = this->spatialParams().SolubilityLimit();
+                  Scalar moleFracNaCl_Max_lPhase = massTomoleFrac_(massFracNaCl_Max_lPhase);
+                  Scalar moleFracNaCl_Max_gPhase = moleFracNaCl_Max_lPhase / volVars.fluidState().pressure(nPhaseIdx);
+
+                  // liquid phase
+                  Scalar precipSalt = volVars.porosity() * volVars.molarDensity(wPhaseIdx)
+                                                             * volVars.saturation(wPhaseIdx)
+                                                             * pow(abs(moleFracNaCl_lPhase - moleFracNaCl_Max_lPhase), 1.0);
+                  if (moleFracNaCl_lPhase < moleFracNaCl_Max_lPhase)
+                                precipSalt *= -1;
+
+                  // gas phase
+                  if (moleFracNaCl_gPhase > moleFracNaCl_Max_gPhase)
+                                precipSalt += volVars.porosity() * volVars.molarDensity(nPhaseIdx)
+                                                             * volVars.saturation(nPhaseIdx)
+                                                             * pow(abs(moleFracNaCl_gPhase - moleFracNaCl_Max_gPhase), 1.0);
+
+                  // make sure we don't disolve more salt than previously precipitated
+                  if (precipSalt*this->timeManager().timeStepSize() + volVars.solidity(sPhaseIdx)* volVars.molarDensity(sPhaseIdx)< 0)
+                                precipSalt = - volVars.solidity(sPhaseIdx)* volVars.molarDensity(sPhaseIdx)/this->timeManager().timeStepSize();
+
+                  if (volVars.solidity(sPhaseIdx) >= volVars.InitialPorosity() - saltPorosity_ && precipSalt > 0)
+                                //if (volVars.solidity(sPhaseIdx) >= 0.1*volVars.InitialPorosity()  && precipSalt > 0)
+                  precipSalt = 0;
+
+                  source[conti0EqIdx + NaClIdx] += -precipSalt;
+                  source[precipNaClEqIdx] += precipSalt;
+
+                  Valgrind::CheckDefined(source);
+    }
+    */
+
 
     //! \}
 
@@ -532,7 +588,7 @@ private:
     
     Scalar systemperature_;
     
-    Scalar salinity_;
+    Scalar salinity_, max_salinity_;
 
     mutable std::vector<Scalar> salt_storage_;
     mutable std::vector<GlobalPosition> xyCoord_;

@@ -187,54 +187,6 @@ public:
             : 1e30;
     }
 
-    /*!
-     * \brief Critical temperature of a component [K].
-     *
-     * \copydetails Doxygen::compIdxParam
-     */
-    /*static Scalar criticalTemperature(unsigned compIdx)
-    {
-        return (compIdx == H2OIdx)
-            ? H2O::criticalTemperature()
-            : (compIdx == CH4Idx)
-            ? CH4::criticalTemperature()
-            : (compIdx == NACLIdx)
-            ? 800.0
-            : 1e30;
-    }*/
-
-    /*!
-     * \brief Critical pressure of a component [Pa].
-     *
-     * \copydetails Doxygen::compIdxParam
-     */
-    /*
-    static Scalar criticalPressure(unsigned compIdx)
-    {
-        return (compIdx == H2OIdx)
-            ? H2O::criticalPressure()
-            : (compIdx == CH4Idx)
-            ? CH4::criticalPressure()
-            : (compIdx == NACLIdx)
-            ? 1e-3
-            : 1e30;
-    }
-
-    /*!
-     * \brief The acentric factor of a component [].
-     *
-     * \copydetails Doxygen::compIdxParam
-     */
-    /*static Scalar acentricFactor(unsigned compIdx)
-    {
-        return (compIdx == H2OIdx)
-            ? H2O::acentricFactor()
-            : (compIdx == CH4Idx)
-            ? CH4::acentricFactor()
-            : (compIdx == NACLIdx)
-            ? 0.8
-            : 1e30;
-    }
 
     /****************************************
      * thermodynamic relations
