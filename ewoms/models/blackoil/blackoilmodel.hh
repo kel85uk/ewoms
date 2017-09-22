@@ -209,8 +209,8 @@ class BlackOilModel
     enum { numComponents = FluidSystem::numComponents };
     enum { numEq = GET_PROP_VALUE(TypeTag, NumEq) };
 
-    // if compositionSwitchIdx is negative then this feature is disabled in Indices
-    static const bool compositionSwitchEnabled = (Indices::compositionSwitchIdx >= 0);
+    static const bool compositionSwitchEnabled = Indices::gasEnabled;
+    static const bool waterEnabled = Indices::waterEnabled;
 
     typedef BlackOilSolventModule<TypeTag> SolventModule;
     typedef BlackOilPolymerModule<TypeTag> PolymerModule;
@@ -368,11 +368,7 @@ public:
     template <class DofEntity>
     void serializeEntity(std::ostream& outstream, const DofEntity& dof)
     {
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 4)
         unsigned dofIdx = static_cast<unsigned>(asImp_().dofMapper().index(dof));
-#else
-        unsigned dofIdx = static_cast<unsigned>(asImp_().dofMapper().map(dof));
-#endif
 
         // write phase state
         if (!outstream.good()) {
@@ -408,11 +404,7 @@ public:
     void deserializeEntity(std::istream& instream,
                            const DofEntity& dof)
     {
-#if DUNE_VERSION_NEWER(DUNE_COMMON, 2, 4)
         unsigned dofIdx = static_cast<unsigned>(asImp_().dofMapper().index(dof));
-#else
-        unsigned dofIdx = static_cast<unsigned>(asImp_().dofMapper().map(dof));
-#endif
 
         // read in the "real" primary variables of the DOF
         auto& priVars = this->solution(/*timeIdx=*/0)[dofIdx];
@@ -512,7 +504,9 @@ public:
                 Scalar So = 0.0;
                 switch (priVars.primaryVarsMeaning()) {
                 case PrimaryVariables::Sw_po_Sg:
-                    So = 1.0 - priVars[Indices::waterSaturationIdx];
+                    So = 1.0;
+                    if( waterEnabled)
+                        So -= priVars[Indices::waterSaturationIdx];
                     if( compositionSwitchEnabled )
                         So -= priVars[Indices::compositionSwitchIdx];
                     break;
@@ -520,7 +514,9 @@ public:
                     So = 0.0;
                     break;
                 case PrimaryVariables::Sw_po_Rs:
-                    So = 1.0 - priVars[Indices::waterSaturationIdx];
+                    So = 1.0;
+                    if (waterEnabled)
+                        So -= priVars[Indices::waterSaturationIdx];
                     break;
                 }
 
