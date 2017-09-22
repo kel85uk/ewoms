@@ -245,8 +245,9 @@ public:
         this->simulator().startNextEpisode(24.0*60.0*60.0);
         ElementContext elemCtx(this->simulator());
         salt_storage_.resize(elemCtx.numDof(0),0);
+        max_salt_reached_.resize(elemCtx.numDof(0),false);
         xyCoord_.resize(elemCtx.numDof(0));
-        salt_file.open("./salt_storage.dat");
+        //salt_file.open("./salt_storage.dat");
     }
 
     /*!
@@ -298,6 +299,7 @@ public:
         if (this->gridView().comm().rank() == 0) {
             std::cout << "Storage: " << storage << std::endl << std::flush;
         }
+        /*
         GlobalPosition pos;
         Scalar x,y;
         for ( auto it = 0; it < salt_storage_.size(); ++it )
@@ -310,6 +312,7 @@ public:
                       << salt_storage_.at(it) << "\n" << std::flush;
           }
         }
+        */
 //#endif // NDEBUG
     }
 
@@ -426,7 +429,7 @@ public:
                   unsigned spaceIdx,
                   unsigned timeIdx        ) const
     {
-		    const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
+        const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
         const Scalar& elemVol = context.dofVolume(spaceIdx,timeIdx);
         const unsigned& globalIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
         
@@ -441,7 +444,9 @@ public:
         Scalar precip_salt = elem_Porosity * elem_molarDensity * elem_saturation
                              * (NaCll_moleFraction - moleFracNaCl_Max_lPhase);
 
-        Scalar removal = std::max(precip_salt,0.);
+        max_salt_reached_.at(globalIdx) = (precip_salt > 0)? true : max_salt_reached_.at(globalIdx);
+        
+        Scalar removal = ( max_salt_reached_.at(globalIdx) )? precip_salt : 0.;//std::max(precip_salt,0.);
         
         RateVector molar_Rate(0.0);
 
@@ -591,6 +596,7 @@ private:
     Scalar salinity_, max_salinity_;
 
     mutable std::vector<Scalar> salt_storage_;
+    mutable std::vector<bool> max_salt_reached_;
     mutable std::vector<GlobalPosition> xyCoord_;
     std::ofstream salt_file;
     
