@@ -52,6 +52,7 @@
 #include "eclcpgridmanager.hh"
 #endif
 #include "eclwellmanager.hh"
+#include "eclaquifermanager.hh"
 #include "eclequilinitializer.hh"
 #include "eclwriter.hh"
 #include "eclsummarywriter.hh"
@@ -113,6 +114,8 @@ NEW_PROP_TAG(RestartWritingInterval);
 
 // Disable well treatment (for users which do this externally)
 NEW_PROP_TAG(DisableWells);
+
+NEW_PROP_TAG(DisableAquifers);
 
 // Enable the additional checks even if compiled in debug mode (i.e., with the NDEBUG
 // macro undefined). Next to a slightly better performance, this also eliminates some
@@ -235,6 +238,8 @@ SET_INT_PROP(EclBaseProblem, RestartWritingInterval, 0xffffff); // disable
 // treatment
 SET_BOOL_PROP(EclBaseProblem, DisableWells, false);
 
+SET_BOOL_PROP(EclBaseProblem, DisableAquifers, false);
+
 // By default, we enable the debugging checks if we're compiled in debug mode
 SET_BOOL_PROP(EclBaseProblem, EnableDebuggingChecks, true);
 
@@ -332,6 +337,7 @@ public:
         , transmissibilities_(simulator.gridManager())
         , thresholdPressures_(simulator)
         , wellManager_(simulator)
+        , aquiferManager_(simulator)
         , deckUnits_(simulator)
         , eclWriter_( EWOMS_GET_PARAM(TypeTag, bool, EnableEclOutput)
                         ? new EclWriterType(simulator) : nullptr )
@@ -1015,33 +1021,16 @@ public:
                 rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
         }
 
-        /*
         if (!GET_PROP_VALUE(TypeTag, DisableAquifers)) {
             // Non existent manager. Still to be implemented
-            //aquiferManager_.computeTotalRatesForDof(rate, context, spaceIdx, timeIdx);
+            aquiferManager_.computeTotalRatesForDof(rate, context, spaceIdx, timeIdx);
 
             // convert the source term from the total mass rate of the
             // cell to the one per unit of volume as used by the model.
             unsigned globalDofIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
             for (unsigned eqIdx = 0; eqIdx < numEq; ++ eqIdx)
                 rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
-        }*/
-        // This is a hack to demonstrate issue #2
-        const auto& pos = context.pos(spaceIdx,timeIdx);
-        const Scalar& elemVol = context.dofVolume(spaceIdx,timeIdx);
-        const unsigned& globalIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
-        const auto& fs = context.intensiveQuantities(spaceIdx,timeIdx).fluidState();
-        auto H2Ogas_moleFraction = (fs).moleFraction(gasPhaseIdx,waterCompIdx);
-        const auto& elem_Porosity = context.intensiveQuantities(spaceIdx,timeIdx).porosity();
-        const auto& elem_molarDensity = (fs).molarDensity(gasPhaseIdx);
-        const auto& elem_saturation = (fs).saturation(gasPhaseIdx);
-        Evaluation maxH2O = 0.01;
-        Evaluation exchanged_water = elem_Porosity * elem_molarDensity * elem_saturation
-                             * (H2Ogas_moleFraction - maxH2O);
-        RateVector exchange_rate(0.0);
-        exchange_rate[Indices::conti0EqIdx + gasCompIdx] -= exchanged_water;
-        exchange_rate[Indices::conti0EqIdx + waterCompIdx] += exchanged_water;
-        rate.setMolarRate(exchange_rate);
+        }
     }
 
     /*!
@@ -1051,6 +1040,9 @@ public:
      */
     const EclWellManager<TypeTag>& wellManager() const
     { return wellManager_; }
+
+    const EclAquiferManager<TypeTag>& aquiferManager() const
+    { return aquiferManager_; }
 
     /*!
      * \brief Apply the necessary measures mandated by the SWATINIT keyword the the
@@ -1719,7 +1711,7 @@ private:
 
     EclWellManager<TypeTag> wellManager_;
 
-    //EclAquiferManager<TypeTag> aquiferManager_;
+    EclAquiferManager<TypeTag> aquiferManager_;
 
     EclDeckUnits<TypeTag> deckUnits_;
 
