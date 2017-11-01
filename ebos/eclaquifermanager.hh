@@ -37,7 +37,7 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/Schedule.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Events.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/CompletionSet.hpp>
-#include <opm/parser/eclipse/EclipseState/Schedule/Aquifer.hpp>
+//#include <opm/parser/eclipse/EclipseState/Schedule/Aquifer.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/TimeMap.hpp>
 #include <opm/common/ErrorMacros.hpp>
 #include <opm/common/Exceptions.hpp>
