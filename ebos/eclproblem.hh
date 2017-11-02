@@ -1031,21 +1031,6 @@ public:
             for (unsigned eqIdx = 0; eqIdx < numEq; ++ eqIdx)
                 rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
         }
-        const auto& pos = context.pos(spaceIdx,timeIdx);
-        const Scalar& elemVol = context.dofVolume(spaceIdx,timeIdx);
-        const unsigned& globalIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
-        const auto& fs = context.intensiveQuantities(spaceIdx,timeIdx).fluidState();
-        auto H2Ogas_moleFraction = (fs).moleFraction(gasPhaseIdx,waterCompIdx);
-        const auto& elem_Porosity = context.intensiveQuantities(spaceIdx,timeIdx).porosity();
-        const auto& elem_molarDensity = (fs).molarDensity(gasPhaseIdx);
-        const auto& elem_saturation = (fs).saturation(gasPhaseIdx);
-        Evaluation maxH2O = 0.01;
-        Evaluation exchanged_water = elem_Porosity * elem_molarDensity * elem_saturation
-                             * (H2Ogas_moleFraction - maxH2O);
-        RateVector exchange_rate(0.0);
-        exchange_rate[Indices::conti0EqIdx + gasCompIdx] -= exchanged_water;
-        exchange_rate[Indices::conti0EqIdx + waterCompIdx] += exchanged_water;
-        rate.setMolarRate(exchange_rate);
     }
 
     /*!

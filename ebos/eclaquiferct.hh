@@ -742,7 +742,7 @@ public:
             if (!FluidSystem::phaseIsActive(phaseIdx))
                 continue;
 
-            modelRate.setVolumetricRate(intQuants.fluidState(), phaseIdx, volumetricRates[phaseIdx]);
+            modelRate.setVolumetricRate(intQuants.fluidState(), phaseIdx, 0.);
             for (unsigned compIdx = 0; compIdx < numComponents; ++compIdx)
                 q[conti0EqIdx + compIdx] += modelRate[conti0EqIdx + compIdx];
         }
