@@ -1010,6 +1010,7 @@ public:
                 unsigned timeIdx) const
     {
         rate = 0.0;
+        aquifer_rate = 0.0;
 
         if (!GET_PROP_VALUE(TypeTag, DisableWells)) {
             wellManager_.computeTotalRatesForDof(rate, context, spaceIdx, timeIdx);
@@ -1023,13 +1024,13 @@ public:
 
         if (!GET_PROP_VALUE(TypeTag, DisableAquifers)) {
             // Non existent manager. Still to be implemented
-            aquiferManager_.computeTotalRatesForDof(rate, context, spaceIdx, timeIdx);
+            aquiferManager_.computeTotalRatesForDof(aquifer_rate, context, spaceIdx, timeIdx);
 
             // convert the source term from the total mass rate of the
             // cell to the one per unit of volume as used by the model.
             unsigned globalDofIdx = context.globalSpaceIndex(spaceIdx, timeIdx);
             for (unsigned eqIdx = 0; eqIdx < numEq; ++ eqIdx)
-                rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
+                aquifer_rate[eqIdx] /= this->model().dofTotalVolume(globalDofIdx);
         }
     }
 
