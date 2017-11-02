@@ -295,19 +295,7 @@ public:
      */
     virtual void addNeighbors(std::vector<NeighborSet>& neighbors) const
     {
-        int aquiferGlobalDof = AuxModule::localToGlobalDof(/*localDofIdx=*/0);
-
-        // the aquifer's bottom hole pressure always affects itself...
-        neighbors[aquiferGlobalDof].insert(aquiferGlobalDof);
-
-        // add the grid DOFs which are influenced by the aquifer, and add the aquifer dof to
-        // the ones neighboring the grid ones
-        auto aquiferDofIt = dofVariables_.begin();
-        const auto& aquiferDofEndIt = dofVariables_.end();
-        for (; aquiferDofIt != aquiferDofEndIt; ++ aquiferDofIt) {
-            neighbors[aquiferGlobalDof].insert(aquiferDofIt->first);
-            neighbors[aquiferDofIt->first].insert(aquiferGlobalDof);
-        }
+        
     }
 
     /*!
@@ -315,10 +303,7 @@ public:
      */
     virtual void applyInitial()
     {
-        auto& sol = const_cast<SolutionVector&>(simulator_.model().solution(/*timeIdx=*/0));
-
-        int aquiferGlobalDof = AuxModule::localToGlobalDof(/*localDofIdx=*/0);
-        sol[aquiferGlobalDof] = 0.0;
+        
     }
 
     /*!
@@ -326,135 +311,7 @@ public:
      */
     virtual void linearize(JacobianMatrix& matrix, GlobalEqVector& residual)
     {
-        const SolutionVector& curSol = simulator_.model().solution(/*timeIdx=*/0);
-
-        unsigned aquiferGlobalDofIdx = AuxModule::localToGlobalDof(/*localDofIdx=*/0);
-        residual[aquiferGlobalDofIdx] = 0.0;
-
-        auto& diagBlock = matrix[aquiferGlobalDofIdx][aquiferGlobalDofIdx];
-        diagBlock = 0.0;
-        for (unsigned i = 0; i < numModelEq; ++ i)
-            diagBlock[i][i] = 1.0;
-
-        if (aquiferStatus() == Shut) {
-            // if the aquifer is shut, make the auxiliary DOFs a trivial equation in the
-            // matrix: the main diagonal is already set to the identity matrix, the
-            // off-diagonal matrix entries must be set to 0.
-            auto aquiferDofIt = dofVariables_.begin();
-            const auto& aquiferDofEndIt = dofVariables_.end();
-            for (; aquiferDofIt != aquiferDofEndIt; ++ aquiferDofIt) {
-                matrix[aquiferGlobalDofIdx][aquiferDofIt->first] = 0.0;
-                matrix[aquiferDofIt->first][aquiferGlobalDofIdx] = 0.0;
-                residual[aquiferGlobalDofIdx] = 0.0;
-            }
-            return;
-        }
-
-        Scalar aquiferResid = aquiferResidual_(actualBottomHolePressure_);
-        residual[aquiferGlobalDofIdx][0] = aquiferResid;
-
-        // account for the effect of the grid DOFs which are influenced by the aquifer on
-        // the aquifer equation and the effect of the aquifer on the grid DOFs
-        auto aquiferDofIt = dofVariables_.begin();
-        const auto& aquiferDofEndIt = dofVariables_.end();
-
-        ElementContext elemCtx(simulator_);
-        for (; aquiferDofIt != aquiferDofEndIt; ++ aquiferDofIt) {
-            unsigned gridDofIdx = aquiferDofIt->first;
-            const auto& dofVars = *dofVariables_[gridDofIdx];
-            DofVariables tmpDofVars(dofVars);
-            auto priVars(curSol[gridDofIdx]);
-
-            /////////////
-            // influence of grid on aquifer
-            auto& curBlock = matrix[aquiferGlobalDofIdx][gridDofIdx];
-
-            elemCtx.updateStencil( dofVars.element );
-            curBlock = 0.0;
-            for (unsigned priVarIdx = 0; priVarIdx < numModelEq; ++priVarIdx) {
-                // calculate the derivative of the aquifer equation w.r.t. the current
-                // primary variable using forward differences
-                Scalar eps =
-                    1e3
-                    *std::numeric_limits<Scalar>::epsilon()
-                    *std::max<Scalar>(1.0, priVars[priVarIdx]);
-                priVars[priVarIdx] += eps;
-
-                elemCtx.updateIntensiveQuantities(priVars, dofVars.localDofIdx, /*timeIdx=*/0);
-                tmpDofVars.update(elemCtx.intensiveQuantities(dofVars.localDofIdx, /*timeIdx=*/0));
-
-                Scalar dAquiferEq_dPV =
-                    (aquiferResidual_(actualBottomHolePressure_, &tmpDofVars, gridDofIdx) - aquiferResid)
-                    / eps;
-                curBlock[0][priVarIdx] = dAquiferEq_dPV;
-
-                // go back to the original primary variables
-                priVars[priVarIdx] -= eps;
-            }
-            //
-            /////////////
-
-            /////////////
-            // influence of aquifer on grid:
-            RateVector q(0.0);
-            RateVector modelRate;
-            std::array<Scalar, numPhases> resvRates;
-
-            elemCtx.updateIntensiveQuantities(priVars, dofVars.localDofIdx, /*timeIdx=*/0);
-
-            const auto& fluidState = elemCtx.intensiveQuantities(dofVars.localDofIdx, /*timeIdx=*/0).fluidState();
-
-            // first, we need the source term of the grid for the slightly disturbed aquifer.
-            Scalar eps =
-                1e3
-                *std::numeric_limits<Scalar>::epsilon()
-                *std::max<Scalar>(1e5, actualBottomHolePressure_);
-            computeVolumetricDofRates_(resvRates, actualBottomHolePressure_ + eps, *dofVariables_[gridDofIdx]);
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                if (!FluidSystem::phaseIsActive(phaseIdx))
-                    continue;
-
-                modelRate.setVolumetricRate(fluidState, phaseIdx, resvRates[phaseIdx]);
-                for (unsigned compIdx = 0; compIdx < numComponents; ++compIdx)
-                    q[compIdx] += modelRate[compIdx];
-            }
-
-            // then, we subtract the source rates for a undisturbed aquifer.
-            computeVolumetricDofRates_(resvRates, actualBottomHolePressure_, *dofVariables_[gridDofIdx]);
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                if (!FluidSystem::phaseIsActive(phaseIdx))
-                    continue;
-
-                modelRate.setVolumetricRate(fluidState, phaseIdx, resvRates[phaseIdx]);
-                for (unsigned compIdx = 0; compIdx < numComponents; ++compIdx)
-                    q[compIdx] -= modelRate[compIdx];
-            }
-
-            // and finally, we divide by the epsilon to get the derivative
-            for (unsigned eqIdx = 0; eqIdx < numModelEq; ++eqIdx)
-                q[eqIdx] /= eps;
-
-            // now we put this derivative into the right place in the Jacobian
-            // matrix. This is a bit hacky because it assumes that the model uses a mass
-            // rate for each component as its first conservation equation, but we require
-            // the black-oil model for now anyway, so this should not be too much of a
-            // problem...
-            Opm::Valgrind::CheckDefined(q);
-            auto& matrixEntry = matrix[gridDofIdx][aquiferGlobalDofIdx];
-            matrixEntry = 0.0;
-            for (unsigned eqIdx = 0; eqIdx < numModelEq; ++ eqIdx)
-                matrixEntry[eqIdx][0] = - Toolbox::value(q[eqIdx])/dofVars.totalVolume;
-            //
-            /////////////
-        }
-
-        // effect of changing the aquifer's bottom hole pressure on the aquifer equation
-        Scalar eps =
-            1e3
-            *std::numeric_limits<Scalar>::epsilon()
-            *std::max<Scalar>(1e7, targetBottomHolePressure_);
-        Scalar aquiferResidStar = aquiferResidual_(actualBottomHolePressure_ + eps);
-        diagBlock[0][0] = (aquiferResidStar - aquiferResid)/eps;
+        
     }
 
 
@@ -535,28 +392,7 @@ public:
      */
     void beginSpec()
     {
-        // this is going to be set to a real value by any realistic grid. Shall we bet?
-        refDepth_ = 1e100;
-
-        // By default, take the bottom hole pressure as a given
-        controlMode_ = ControlMode::BottomHolePressure;
-
-        // use one bar for the default bottom hole and tubing head
-        // pressures. For the bottom hole pressure, this is probably
-        // off by at least one magnitude...
-        bhpLimit_ = 1e5;
-        thpLimit_ = 1e5;
-
-        // reset the actually observed bottom hole pressure
-        actualBottomHolePressure_ = 0.0;
-
-        // By default, all fluids exhibit the weight 1.0
-        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx)
-            volumetricWeight_[phaseIdx] = 1.0;
-
-        aquiferType_ = Undefined;
-
-        aquiferTotalVolume_ = 0.0;
+        
     }
 
     /*!
@@ -589,94 +425,7 @@ public:
     template <class Context>
     void addDof(const Context& context, unsigned dofIdx)
     {
-        unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-        if (applies(globalDofIdx))
-            // we already have this DOF in the aquifer!
-            return;
-
-        const auto& dofPos = context.pos(dofIdx, /*timeIdx=*/0);
-
-        dofVarsStore_.push_back(DofVariables());
-        dofVariables_[globalDofIdx] = &dofVarsStore_.back();
-        DofVariables& dofVars = *dofVariables_[globalDofIdx];
-        aquiferTotalVolume_ += context.model().dofTotalVolume(globalDofIdx);
-
-        dofVars.element = context.element();
-
-        dofVars.localDofIdx = dofIdx;
-        dofVars.pvtRegionIdx = context.problem().pvtRegionIndex(context, dofIdx, /*timeIdx=*/0);
-        assert(dofVars.pvtRegionIdx == 0);
-
-        // determine the size of the element
-        dofVars.effectiveSize.fill(0.0);
-
-        // we assume all elements to be hexahedrons!
-        assert(context.element().subEntities(/*codim=*/dimWorld) == 8);
-
-        const auto& refElem = Dune::ReferenceElements<Scalar, /*dim=*/3>::cube();
-
-        // determine the current element's effective size
-        const auto& elem = context.element();
-        unsigned faceIdx = 0;
-        unsigned numFaces = refElem.size(/*codim=*/1);
-        for (; faceIdx < numFaces; ++faceIdx) {
-            const auto& faceCenterLocal = refElem.position(faceIdx, /*codim=*/1);
-            const auto& faceCenter = elem.geometry().global(faceCenterLocal);
-
-            switch (faceIdx) {
-            case 0:
-                dofVars.effectiveSize[0] -= faceCenter[0];
-                break;
-            case 1:
-                dofVars.effectiveSize[0] += faceCenter[0];
-                break;
-            case 2:
-                dofVars.effectiveSize[1] -= faceCenter[1];
-                break;
-            case 3:
-                dofVars.effectiveSize[1] += faceCenter[1];
-                break;
-            case 4:
-                dofVars.depth += faceCenter[2];
-                dofVars.effectiveSize[2] -= faceCenter[2];
-                break;
-            case 5:
-                dofVars.depth += faceCenter[2];
-                dofVars.effectiveSize[2] += faceCenter[2];
-                break;
-            }
-        }
-
-        // the volume associated with the DOF
-        dofVars.totalVolume = context.model().dofTotalVolume(globalDofIdx);
-
-        // the depth of the degree of freedom
-        dofVars.depth /= 2;
-
-        // default borehole radius: 1/2 foot
-        dofVars.boreholeRadius = 0.3048/2;
-
-        // default skin factor: 0
-        dofVars.skinFactor = 0;
-
-        // the intrinsic permeability tensor of the DOF
-        const auto& K = context.problem().intrinsicPermeability(context, dofIdx, /*timeIdx=*/0);
-        dofVars.permeability = K;
-
-        // default the effective permeability: Geometric mean of the x and y components
-        // of the intrinsic permeability of DOF times the DOF's height.
-        assert(K[0][0] > 0);
-        assert(K[1][1] > 0);
-        dofVars.effectivePermeability =
-            std::sqrt(K[0][0]*K[1][1])*dofVars.effectiveSize[2];
-
-        // from that, compute the default connection transmissibility factor
-        computeConnectionTransmissibilityFactor_(globalDofIdx);
-
-        // we assume that the z-coordinate represents depth (and not
-        // height) here...
-        if (dofPos[2] < refDepth_)
-            refDepth_ = dofPos[2];
+        
     }
 
     /*!
@@ -684,20 +433,7 @@ public:
      */
     void endSpec()
     {
-        const auto& comm = simulator_.gridView().comm();
-
-        if (dofVariables_.size() == 0) {
-            std::cout << "Aquifer " << name() << " does not penetrate any active cell."
-                      << " Assuming it to be shut!\n";
-            setAquiferStatus(AquiferStatus::Shut);
-            return;
-        }
-
-        // determine the maximum depth of the aquifer over all processes
-        refDepth_ = comm.min(refDepth_);
-
-        // the total volume of the aquifer must also be summed over all processes
-        aquiferTotalVolume_ = comm.sum(aquiferTotalVolume_);
+        
     }
 
     /*!
@@ -715,8 +451,7 @@ public:
     template <class Context>
     void setConnectionTransmissibilityFactor(const Context& context, unsigned dofIdx, Scalar value)
     {
-        unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-        dofVariables_[globalDofIdx]->connectionTransmissibilityFactor = value;
+        
     }
 
     /*!
@@ -733,10 +468,7 @@ public:
     template <class Context>
     void setEffectivePermeability(const Context& context, unsigned dofIdx, Scalar value)
     {
-        unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-        dofVariables_[globalDofIdx].effectivePermeability = value;
-
-        computeConnectionTransmissibilityFactor_(globalDofIdx);
+        
     }
 
     /*!
@@ -829,10 +561,7 @@ public:
      */
     Scalar tubingHeadPressure() const
     {
-        // warning: this is a bit hacky...
-        Scalar rho = 650; // kg/m^3
-        Scalar g = 9.81; // m/s^2
-        return actualBottomHolePressure_ + rho*refDepth_*g;
+        return 0.;
     }
 
     /*!
@@ -897,10 +626,7 @@ public:
     template <class Context>
     void setSkinFactor(const Context& context, unsigned dofIdx, Scalar value)
     {
-        unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-        dofVariables_[globalDofIdx].skinFactor = value;
-
-        computeConnectionTransmissibilityFactor_(globalDofIdx);
+        
     }
 
     /*!
@@ -919,10 +645,7 @@ public:
     template <class Context>
     void setRadius(const Context& context, unsigned dofIdx, Scalar value)
     {
-        unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-        dofVariables_[globalDofIdx]->boreholeRadius = value;
-
-        computeConnectionTransmissibilityFactor_(globalDofIdx);
+        
     }
 
     /*!
@@ -936,31 +659,7 @@ public:
      */
     void beginTimeStep()
     {
-        if (aquiferStatus() == Shut)
-            return;
-
-        // calculate the bottom hole pressure to be actually used
-        if (controlMode_ == ControlMode::TubingHeadPressure) {
-            // assume a density of 650 kg/m^3 for the bottom hole pressure
-            // calculation
-            Scalar rho = 650.0;
-            targetBottomHolePressure_ = thpLimit_ + rho*refDepth_;
-        }
-        else if (controlMode_ == ControlMode::BottomHolePressure)
-            targetBottomHolePressure_ = bhpLimit_;
-        else
-            // TODO: also take the tubing head pressure limit into account...
-            targetBottomHolePressure_ = bhpLimit_;
-
-        // make it very likely that we screw up if we control for {surface,reservoir}
-        // rate, but depend on the {reservoir,surface} rate somewhere...
-        if (controlMode_ == ControlMode::VolumetricSurfaceRate)
-            maximumReservoirRate_ = 1e100;
-        else if (controlMode_ == ControlMode::VolumetricReservoirRate)
-            maximumSurfaceRate_ = 1e100;
-
-        // reset the iteration index
-        iterationIdx_ = 0;
+        
     }
 
     /*!
@@ -985,22 +684,7 @@ public:
     template <class Context>
     void beginIterationAccumulate(Context& context, unsigned timeIdx)
     {
-        if (aquiferStatus() == Shut)
-            return;
-
-        for (unsigned dofIdx = 0; dofIdx < context.numPrimaryDof(timeIdx); ++dofIdx) {
-            unsigned globalDofIdx = context.globalSpaceIndex(dofIdx, timeIdx);
-            if (!applies(globalDofIdx))
-                continue;
-
-            DofVariables& dofVars = *dofVariables_.at(globalDofIdx);
-            const auto& intQuants = context.intensiveQuantities(dofIdx, timeIdx);
-
-            if (iterationIdx_ == 0)
-                dofVars.updateBeginTimestep(intQuants);
-
-            dofVars.update(intQuants);
-        }
+        
     }
 
     /*!
@@ -1011,24 +695,7 @@ public:
      */
     void beginIterationPostProcess()
     {
-        if (aquiferStatus() == Shut)
-            return;
-
-        auto& sol = const_cast<SolutionVector&>(simulator_.model().solution(/*timeIdx=*/0));
-        int aquiferGlobalDof = AuxModule::localToGlobalDof(/*localDofIdx=*/0);
-
-        // retrieve the bottom hole pressure from the global system of equations
-        actualBottomHolePressure_ = Toolbox::value(dofVariables_.begin()->second->pressure[0]);
-        actualBottomHolePressure_ = computeRateEquivalentBhp_();
-
-        sol[aquiferGlobalDof][0] = actualBottomHolePressure_;
-
-        computeOverallRates_(actualBottomHolePressure_,
-                             actualResvRates_,
-                             actualSurfaceRates_);
-
-        actualWeightedResvRate_ = computeWeightedRate_(actualResvRates_);
-        actualWeightedSurfaceRate_ = computeWeightedRate_(actualSurfaceRates_);
+        
     }
 
     /*!
@@ -1042,43 +709,7 @@ public:
      */
     void endTimeStep()
     {
-        if (aquiferStatus() == Shut)
-            return;
-
-        // we use a condition that is always false here to prevent the code below from
-        // bitrotting. (i.e., at least it stays compileable)
-        if (false && simulator_.gridView().comm().rank() == 0) {
-            std::cout << "Aquifer '" << name() << "':\n";
-            std::cout << " Control mode: " << controlMode_ << "\n";
-            std::cout << " BHP limit: " << bhpLimit_/1e5 << " bar\n";
-            std::cout << " Observed BHP: " << actualBottomHolePressure_/1e5 << " bar\n";
-            std::cout << " Weighted surface rate limit: " << maximumSurfaceRate_ << "\n";
-            std::cout << " Weighted surface rate: " << std::abs(actualWeightedSurfaceRate_) << " (="
-                      << 100*std::abs(actualWeightedSurfaceRate_)/maximumSurfaceRate_ << "%)\n";
-
-            std::cout << " Surface rates:\n";
-            std::cout << "  oil: "
-                      << actualSurfaceRates_[oilPhaseIdx] << " m^3/s = "
-                      << actualSurfaceRates_[oilPhaseIdx]*(24*60*60) << " m^3/day = "
-                      << actualSurfaceRates_[oilPhaseIdx]*(24*60*60)/0.15898729 << " STB/day = "
-                      << actualSurfaceRates_[oilPhaseIdx]*(24*60*60)
-                         *FluidSystem::referenceDensity(oilPhaseIdx, /*pvtRegionIdx=*/0) << " kg/day"
-                      << "\n";
-            std::cout << "  gas: "
-                      << actualSurfaceRates_[gasPhaseIdx] << " m^3/s = "
-                      << actualSurfaceRates_[gasPhaseIdx]*(24*60*60) << " m^3/day = "
-                      << actualSurfaceRates_[gasPhaseIdx]*(24*60*60)/28.316847 << " MCF/day = "
-                      << actualSurfaceRates_[gasPhaseIdx]*(24*60*60)
-                         *FluidSystem::referenceDensity(gasPhaseIdx, /*pvtRegionIdx=*/0) << " kg/day"
-                      << "\n";
-            std::cout << "  water: "
-                      << actualSurfaceRates_[waterPhaseIdx] << " m^3/s = "
-                      << actualSurfaceRates_[waterPhaseIdx]*(24*60*60) << " m^3/day = "
-                      << actualSurfaceRates_[waterPhaseIdx]*(24*60*60)/0.15898729 << " STB/day = "
-                      << actualSurfaceRates_[waterPhaseIdx]*(24*60*60)
-                         *FluidSystem::referenceDensity(waterPhaseIdx, /*pvtRegionIdx=*/0) << " kg/day"
-                      << "\n";
-        }
+        
     }
 
     /*!
@@ -1124,30 +755,6 @@ protected:
     // of a connection, the radius of the borehole and the skin factor.
     void computeConnectionTransmissibilityFactor_(unsigned globalDofIdx)
     {
-        auto& dofVars = *dofVariables_[globalDofIdx];
-
-        const auto& D = dofVars.effectiveSize;
-        const auto& K = dofVars.permeability;
-        Scalar Kh = dofVars.effectivePermeability;
-        Scalar S = dofVars.skinFactor;
-        Scalar rAquifer = dofVars.boreholeRadius;
-
-        // compute the "equivalence radius" r_0 of the connection
-        assert(K[0][0] > 0.0);
-        assert(K[1][1] > 0.0);
-        Scalar tmp1 = std::sqrt(K[1][1]/K[0][0]);
-        Scalar tmp2 = 1.0 / tmp1;
-        Scalar r0 = std::sqrt(D[0]*D[0]*tmp1 + D[1]*D[1]*tmp2);
-        r0 /= std::sqrt(tmp1) + std::sqrt(tmp2);
-        r0 *= 0.28;
-
-        // we assume the aquifer borehole in the center of the dof and that it is vertical,
-        // i.e., the area which is exposed to the flow is 2*pi*r0*h. (for non-vertical
-        // aquifers this would need to be multiplied with the cosine of the angle and the
-        // height must be adapted...)
-        const Scalar exposureFactor = 2*M_PI;
-
-        dofVars.connectionTransmissibilityFactor = exposureFactor*Kh/(std::log(r0 / rAquifer) + S);
     }
 
     template <class ResultEval, class BhpEval>
@@ -1155,78 +762,7 @@ protected:
                                     const BhpEval& bottomHolePressure,
                                     const DofVariables& dofVars) const
     {
-        typedef Opm::MathToolbox<Evaluation> DofVarsToolbox;
-        typedef typename std::conditional<std::is_same<BhpEval, Scalar>::value,
-                                          ResultEval,
-                                          Scalar>::type DofEval;
-        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx)
-            volRates[phaseIdx] = 0.0;
-
-        // connection transmissibility factor for the current DOF.
-        Scalar Twj = dofVars.connectionTransmissibilityFactor;
-
-        // bottom hole pressure and depth of the degree of freedom
-        ResultEval pbh = bottomHolePressure;
-        Scalar depth = dofVars.depth;
-
-        // gravity constant
-        Scalar g = simulator_.problem().gravity()[dimWorld - 1];
-
-        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-            if (!FluidSystem::phaseIsActive(phaseIdx))
-                continue;
-
-            // aquifer model due to Peaceman; see Chen et al., p. 449
-
-            // phase pressure in grid cell
-            const DofEval& p = DofVarsToolbox::template decay<DofEval>(dofVars.pressure[phaseIdx]);
-
-            // density and mobility of fluid phase
-            const DofEval& rho = DofVarsToolbox::template decay<DofEval>(dofVars.density[phaseIdx]);
-            DofEval lambda;
-            if (aquiferType_ == Producer) {
-                //assert(p < pbh);
-                lambda = DofVarsToolbox::template decay<DofEval>(dofVars.mobility[phaseIdx]);
-            }
-            else if (aquiferType_ == Injector) {
-                //assert(p > pbh);
-                if (phaseIdx != injectedPhaseIdx_)
-                    continue;
-
-                // use the total mobility, i.e. the sum of all phase mobilities at the
-                // injector cell. this seems a bit weird: at the wall of the borehole,
-                // there should only be injected phase present, so its mobility should be
-                // 1/viscosity...
-                lambda = 0.0;
-                for (unsigned phase2Idx = 0; phase2Idx < numPhases; ++phase2Idx) {
-                    if (!FluidSystem::phaseIsActive(phase2Idx))
-                        continue;
-
-                    lambda += DofVarsToolbox::template decay<DofEval>(dofVars.mobility[phase2Idx]);
-                }
-            }
-            else
-                OPM_THROW(std::logic_error,
-                          "Type of aquifer \"" << name() << "\" is undefined");
-
-            Opm::Valgrind::CheckDefined(pbh);
-            Opm::Valgrind::CheckDefined(p);
-            Opm::Valgrind::CheckDefined(g);
-            Opm::Valgrind::CheckDefined(rho);
-            Opm::Valgrind::CheckDefined(lambda);
-            Opm::Valgrind::CheckDefined(depth);
-            Opm::Valgrind::CheckDefined(refDepth_);
-
-            // pressure in the borehole ("hole pressure") at the given location
-            ResultEval ph = pbh + rho*g*(depth - refDepth_);
-
-            // volumetric reservoir rate for the phase
-            volRates[phaseIdx] = Twj*lambda*(ph - p);
-
-            Opm::Valgrind::CheckDefined(g);
-            Opm::Valgrind::CheckDefined(ph);
-            Opm::Valgrind::CheckDefined(volRates[phaseIdx]);
-        }
+        
     }
 
     /*!
@@ -1240,12 +776,6 @@ protected:
     Eval computeWeightedRate_(const std::array<Eval, numPhases>& volRates) const
     {
         Eval result = 0;
-        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-            if (!FluidSystem::phaseIsActive(phaseIdx))
-                continue;
-
-            result += volRates[phaseIdx]*volumetricWeight_[phaseIdx];
-        }
         return result;
     }
 
@@ -1260,54 +790,7 @@ protected:
                               const std::array<Eval, numPhases>& reservoirRate,
                               const DofVariables& dofVars) const
     {
-        // the array for the surface rates and the one for the reservoir rates must not
-        // be the same!
-        assert(&surfaceRates != &reservoirRate);
-
-        int regionIdx = dofVars.pvtRegionIdx;
-
-        // If your compiler bails out here, you have not chosen the correct fluid
-        // system. Currently, only Opm::FluidSystems::BlackOil is supported, sorry...
-        Scalar rhoOilSurface = FluidSystem::referenceDensity(oilPhaseIdx, regionIdx);
-        Scalar rhoGasSurface = FluidSystem::referenceDensity(gasPhaseIdx, regionIdx);
-        Scalar rhoWaterSurface = FluidSystem::referenceDensity(waterPhaseIdx, regionIdx);
-
-        // oil
-        if (FluidSystem::phaseIsActive(oilPhaseIdx))
-            surfaceRates[oilPhaseIdx] =
-                // oil in gas phase
-                reservoirRate[gasPhaseIdx]
-                * Toolbox::value(dofVars.density[gasPhaseIdx])
-                * Toolbox::value(dofVars.gasMassFraction[oilCompIdx])
-                / rhoOilSurface
-                +
-                // oil in oil phase
-                reservoirRate[oilPhaseIdx]
-                * Toolbox::value(dofVars.density[oilPhaseIdx])
-                * Toolbox::value(dofVars.oilMassFraction[oilCompIdx])
-                / rhoOilSurface;
-
-        // gas
-        if (FluidSystem::phaseIsActive(gasPhaseIdx))
-            surfaceRates[gasPhaseIdx] =
-                // gas in gas phase
-                reservoirRate[gasPhaseIdx]
-                * Toolbox::value(dofVars.density[gasPhaseIdx])
-                * Toolbox::value(dofVars.gasMassFraction[gasCompIdx])
-                / rhoGasSurface
-                +
-                // gas in oil phase
-                reservoirRate[oilPhaseIdx]
-                * Toolbox::value(dofVars.density[oilPhaseIdx])
-                * Toolbox::value(dofVars.oilMassFraction[gasCompIdx])
-                / rhoGasSurface;
-
-        // water
-        if (FluidSystem::phaseIsActive(waterPhaseIdx))
-            surfaceRates[waterPhaseIdx] =
-                reservoirRate[waterPhaseIdx]
-                * Toolbox::value(dofVars.density[waterPhaseIdx])
-                / rhoWaterSurface;
+        
     }
 
     /*!
@@ -1323,37 +806,7 @@ protected:
                               int globalEvalDofIdx = -1) const
 
     {
-        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-            overallResvRates[phaseIdx] = 0.0;
-            overallSurfaceRates[phaseIdx] = 0.0;
-        }
-
-        auto dofVarsIt = dofVariables_.begin();
-        const auto& dofVarsEndIt = dofVariables_.end();
-        for (; dofVarsIt != dofVarsEndIt; ++ dofVarsIt) {
-            std::array<Scalar, numPhases> volumetricReservoirRates;
-            const DofVariables *tmp;
-            if (dofVarsIt->first == globalEvalDofIdx)
-                tmp = evalDofVars;
-            else
-                tmp = dofVarsIt->second;
-
-            computeVolumetricDofRates_<Scalar, Scalar>(volumetricReservoirRates, bottomHolePressure, *tmp);
-
-            std::array<Scalar, numPhases> volumetricSurfaceRates;
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                volumetricSurfaceRates[ phaseIdx ] = 0;
-            }
-            computeSurfaceRates_(volumetricSurfaceRates, volumetricReservoirRates, *tmp);
-
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                if (!FluidSystem::phaseIsActive(phaseIdx))
-                    continue;
-
-                overallResvRates[phaseIdx] += volumetricReservoirRates[phaseIdx];
-                overallSurfaceRates[phaseIdx] += volumetricSurfaceRates[phaseIdx];
-            }
-        }
+        
     }
 
     /*!
@@ -1368,13 +821,7 @@ protected:
                                               int globalEvalDofIdx) const
 
     {
-        static std::array<Scalar, numPhases> resvRatesDummy;
-        computeOverallRates_(bottomHolePressure,
-                             overallSurfaceRates,
-                             resvRatesDummy,
-                             evalDofVars,
-                             globalEvalDofIdx);
-        return computeWeightedRate_(overallSurfaceRates);
+        return 0.;
     }
 
     // this is a more convenient version of the method above if all degrees of freedom
@@ -1382,13 +829,7 @@ protected:
     Scalar computeOverallWeightedSurfaceRate_(Scalar bottomHolePressure,
                                               std::array<Scalar, numPhases>& overallSurfaceRates) const
     {
-        // create a dummy DofVariables object and call the method above using an index
-        // that is guaranteed to never be part of a aquifer...
-        static DofVariables dummyDofVars;
-        return computeOverallWeightedSurfaceRate_(bottomHolePressure,
-                                                  overallSurfaceRates,
-                                                  dummyDofVars,
-                                                  /*globalEvalDofIdx=*/-1);
+        return 0.;
     }
 
     /*!
@@ -1400,55 +841,7 @@ protected:
      */
     Scalar computeRateEquivalentBhp_() const
     {
-        if (aquiferStatus() == Shut)
-            // there is no flow happening in the aquifer, so we return 0...
-            return 0.0;
-
-        // initialize the bottom hole pressure which we would like to calculate
-        Scalar bhpScalar = actualBottomHolePressure_;
-        if (bhpScalar > 1e8)
-            bhpScalar = 1e8;
-        if (bhpScalar < 1e5)
-            bhpScalar = 1e5;
-
-        // if the BHP goes below 1 bar for the first time, we reset it to 10 bars and
-        // are "on bail", i.e. if it goes below 1 bar again, we give up because the
-        // final pressure would be below 1 bar...
-        bool onBail = false;
-
-        // Newton-Raphson method
-        typedef Opm::DenseAd::Evaluation<Scalar, 1> BhpEval;
-
-        BhpEval bhpEval(bhpScalar);
-        bhpEval.setDerivative(0, 1.0);
-        const Scalar tolerance = 1e3*std::numeric_limits<Scalar>::epsilon();
-        for (int iterNum = 0; iterNum < 20; ++iterNum) {
-            const auto& f = aquiferResidual_<BhpEval>(bhpEval);
-
-            if (std::abs(f.derivative(0)) < 1e-20)
-                OPM_THROW(Opm::NumericalProblem,
-                          "Cannot determine the bottom hole pressure for aquifer " << name()
-                          << ": Derivative of the aquifer residual is too small");
-            Scalar delta = f.value()/f.derivative(0);
-
-            bhpEval.setValue(bhpEval.value() - delta);
-            if (bhpEval < 1e5) {
-                bhpEval.setValue(1e5);
-                if (onBail)
-                    return bhpEval.value();
-                else
-                    onBail = true;
-            }
-            else
-                onBail = false;
-
-            if (std::abs(delta/bhpEval.value()) < tolerance)
-                return bhpEval.value();
-        }
-
-        OPM_THROW(Opm::NumericalProblem,
-                  "Could not determine the bottom hole pressure of aquifer '" << name()
-                  << "' within 20 iterations.");
+        return 0.;
     }
 
     template <class BhpEval>
@@ -1460,82 +853,7 @@ protected:
 
         // compute the volumetric reservoir and surface rates for the complete aquifer
         BhpEval resvRate = 0.0;
-
-        std::array<BhpEval, numPhases> totalSurfaceRates;
-        std::fill(totalSurfaceRates.begin(), totalSurfaceRates.end(), 0.0);
-
-        auto dofVarsIt = dofVariables_.begin();
-        const auto& dofVarsEndIt = dofVariables_.end();
-        for (; dofVarsIt != dofVarsEndIt; ++ dofVarsIt) {
-            std::array<BhpEval, numPhases> resvRates;
-            const DofVariables *dofVars = dofVarsIt->second;
-            if (replacedGridIdx == dofVarsIt->first)
-                dofVars = replacementDofVars;
-            computeVolumetricDofRates_(resvRates, bhp, *dofVars);
-
-            std::array<BhpEval, numPhases> surfaceRates;
-            computeSurfaceRates_(surfaceRates, resvRates, *dofVars);
-
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                if (!FluidSystem::phaseIsActive(phaseIdx))
-                    continue;
-
-                totalSurfaceRates[phaseIdx] += surfaceRates[phaseIdx];
-            }
-
-            resvRate += computeWeightedRate_(resvRates);
-        }
-
-        BhpEval surfaceRate = computeWeightedRate_(totalSurfaceRates);
-
-        // compute the residual of aquifer equation. we currently use max(rateMax - rate,
-        // bhp - targetBhp) for producers and max(rateMax - rate, bhp - targetBhp) for
-        // injectors. (i.e., the target bottom hole pressure is an upper limit for
-        // injectors and a lower limit for producers.) Note that with this approach, one
-        // of the limits must always be reached to get the aquifer equation to zero...
-        Opm::Valgrind::CheckDefined(maximumSurfaceRate_);
-        Opm::Valgrind::CheckDefined(maximumReservoirRate_);
-        Opm::Valgrind::CheckDefined(surfaceRate);
-        Opm::Valgrind::CheckDefined(resvRate);
-
-        BhpEval result = 1e30;
-
-        BhpEval maxSurfaceRate = maximumSurfaceRate_;
-        BhpEval maxResvRate = maximumReservoirRate_;
-        if (aquiferStatus() == Closed) {
-            // make the weight of the fluids on the surface equal and require that no
-            // fluids are produced on the surface...
-            maxSurfaceRate = 0.0;
-            surfaceRate = 0.0;
-            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
-                if (!FluidSystem::phaseIsActive(phaseIdx))
-                    continue;
-
-                surfaceRate += totalSurfaceRates[phaseIdx];
-            }
-
-            // don't care about the reservoir rate...
-            maxResvRate = 1e30;
-        }
-
-        if (aquiferType_ == Injector) {
-            // for injectors the computed rates are positive and the target BHP is the
-            // maximum allowed pressure ...
-            result = BhpEvalToolbox::min(maxSurfaceRate - surfaceRate, result);
-            result = BhpEvalToolbox::min(maxResvRate - resvRate, result);
-            result = BhpEvalToolbox::min(1e-7*(targetBottomHolePressure_ - bhp), result);
-        }
-        else {
-            assert(aquiferType_ == Producer);
-            // ... for producers the rates are negative and the bottom hole pressure is
-            // is the minimum
-            result = BhpEvalToolbox::min(maxSurfaceRate + surfaceRate, result);
-            result = BhpEvalToolbox::min(maxResvRate + resvRate, result);
-            result = BhpEvalToolbox::min(1e-7*(bhp - targetBottomHolePressure_), result);
-        }
-
-        const Scalar scalingFactor = 1e-3;
-        return scalingFactor*result;
+        return resvRate;
     }
 
     const Simulator& simulator_;
