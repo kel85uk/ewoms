@@ -1010,7 +1010,7 @@ public:
                 unsigned timeIdx) const
     {
         rate = 0.0;
-        aquifer_rate = 0.0;
+        RateVector aquifer_rate = 0.0;
 
         if (!GET_PROP_VALUE(TypeTag, DisableWells)) {
             wellManager_.computeTotalRatesForDof(rate, context, spaceIdx, timeIdx);
